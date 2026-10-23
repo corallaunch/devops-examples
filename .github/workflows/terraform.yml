@@ -34,7 +34,7 @@ jobs:
   plan:
     name: Plan
     needs: check
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && vars.AWS_PLAN_ROLE_ARN != ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -59,7 +59,7 @@ jobs:
   apply:
     name: Apply
     needs: check
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AWS_DEPLOY_ROLE_ARN != ''
     runs-on: ubuntu-latest
     environment: production   # add required reviewers in repo settings
     steps:
