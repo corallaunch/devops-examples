@@ -1,0 +1,4 @@
+name            = "demo-web"
+region          = "ap-southeast-1"
+environment     = "staging"
+certificate_arn = "arn:aws:acm:ap-southeast-1:123456789012:certificate/replace-me"

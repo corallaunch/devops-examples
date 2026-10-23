@@ -1,0 +1,88 @@
+---
+# Basic hardening for Ubuntu 22.04 / 24.04 servers.
+# Run in check mode first:  ansible-playbook -i inventory.ini harden.yml --check --diff
+- name: Harden Ubuntu servers
+  hosts: all
+  become: true
+  vars:
+    ssh_port: 22
+    admin_users: []          # list of users allowed to SSH, for example ["deploy"]
+    allowed_tcp_ports: [80, 443]
+
+  handlers:
+    - name: Restart ssh
+      ansible.builtin.service:
+        name: ssh
+        state: restarted
+
+  tasks:
+    - name: Update package cache and upgrade packages
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: safe
+        cache_valid_time: 3600
+
+    - name: Install security packages
+      ansible.builtin.apt:
+        name: [ufw, fail2ban, unattended-upgrades]
+        state: present
+
+    - name: Turn on automatic security updates
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+        mode: "0644"
+
+    - name: SSH settings (keys only, no root login)
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/10-hardening.conf
+        content: |
+          Port {{ ssh_port }}
+          PermitRootLogin no
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          X11Forwarding no
+          MaxAuthTries 3
+          LoginGraceTime 30
+          {% if admin_users | length > 0 %}AllowUsers {{ admin_users | join(' ') }}{% endif %}
+        mode: "0644"
+        validate: /usr/sbin/sshd -t -f %s
+      notify: Restart ssh
+
+    - name: Firewall, allow SSH first so we do not lock ourselves out
+      community.general.ufw:
+        rule: limit
+        port: "{{ ssh_port }}"
+        proto: tcp
+
+    - name: Firewall, allow app ports
+      community.general.ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop: "{{ allowed_tcp_ports }}"
+
+    - name: Firewall, deny everything else and turn on
+      community.general.ufw:
+        state: enabled
+        policy: deny
+        direction: incoming
+
+    - name: Fail2ban for SSH
+      ansible.builtin.copy:
+        dest: /etc/fail2ban/jail.d/sshd.local
+        content: |
+          [sshd]
+          enabled = true
+          port = {{ ssh_port }}
+          maxretry = 5
+          bantime = 1h
+        mode: "0644"
+
+    - name: Make sure fail2ban is running
+      ansible.builtin.service:
+        name: fail2ban
+        state: started
+        enabled: true
