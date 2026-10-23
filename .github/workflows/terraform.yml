@@ -1,0 +1,73 @@
+name: Terraform
+
+on:
+  pull_request:
+    paths: ["terraform/**"]
+  push:
+    branches: [main]
+    paths: ["terraform/**"]
+
+permissions:
+  contents: read
+  id-token: write        # for AWS OIDC, no long lived keys
+  pull-requests: write   # to post the plan on the pull request
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TF_DIR: terraform/examples/fargate-web
+  AWS_REGION: ap-southeast-1
+
+jobs:
+  check:
+    name: Format and validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform fmt -recursive -check terraform
+      - run: terraform -chdir=$TF_DIR init -backend=false -input=false
+      - run: terraform -chdir=$TF_DIR validate
+
+  plan:
+    name: Plan
+    needs: check
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}   # read only role
+          aws-region: ${{ env.AWS_REGION }}
+      - run: terraform -chdir=$TF_DIR init -input=false
+      - id: plan
+        run: terraform -chdir=$TF_DIR plan -input=false -no-color -var="certificate_arn=${{ vars.CERTIFICATE_ARN }}" | tee plan.txt
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('plan.txt', 'utf8').slice(-60000);
+            await github.rest.issues.createComment({
+              ...context.repo, issue_number: context.issue.number,
+              body: '### Terraform plan\n```\n' + plan + '\n```'
+            });
+
+  apply:
+    name: Apply
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production   # add required reviewers in repo settings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - run: terraform -chdir=$TF_DIR init -input=false
+      - run: terraform -chdir=$TF_DIR apply -input=false -auto-approve -var="certificate_arn=${{ vars.CERTIFICATE_ARN }}"
